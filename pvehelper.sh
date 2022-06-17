@@ -18,6 +18,7 @@ ADD_TEMPTURE_SHOW=0
 DELETE_TEMPEURE_SHOW=0
 ADD_SUBSCRIPTION_INFO=0
 DELETE_SUBSCRIPTION_INFO=0
+RDM_PASSTHROUGH_DISK=0
 INTERACTIVE=0
 SHOW_HELP=0
 LANGUAGE=''
@@ -64,6 +65,10 @@ while [[ $# -ge 1 ]]; do
             ADD_SUBSCRIPTION_INFO=1
             shift
             ;;
+        -rpd|--rdmpassthroughdisk)
+            RDM_PASSTHROUGH_DISK=1
+            shift
+            ;;
         -h|--help)
             SHOW_HELP=1
             ;;
@@ -79,6 +84,7 @@ function Main() {
     # enter interactive mode
     if [[ $INTERACTIVE -eq 1 ]]; then
         Select_language
+        exit 0
     fi
 
     # change source
@@ -114,6 +120,11 @@ function Main() {
     # synchronize time
     if [[ $SYNCHRONIZETIME -eq 1 ]]; then
         Synchronize_time
+    fi
+
+    # rdm passthrough disk
+    if [[ $RDM_PASSTHROUGH_DISK -eq 1 ]]; then
+        Rdm_passthrough_disk
     fi
 
     # show help
@@ -170,6 +181,7 @@ function Interactive() {
         echo "[6] restore subscription info"
         echo "[7] synchronize time"
         echo "[8] update RTL8125 driver"
+        echo "[9] RDM passthrough disk"
         read -p "select [default 1]" option
     elif [[ $LANGUAGE == "zh" ]]; then
         echo "选项:"
@@ -181,6 +193,7 @@ function Interactive() {
         echo "[6] 恢复订阅提示"
         echo "[7] 同步时间"
         echo "[8] 更新瑞昱R8125驱动"
+        echo "[9] RDM直通硬盘"
         read -p "请选择[默认 1]" option
     fi
 
@@ -218,6 +231,10 @@ function Interactive() {
         8)
             echo "update r8125 driver"
             Update_r8125_driver
+            ;;
+        9)
+            echo "rdm passthrough disk"
+            Rdm_passthrough_disk
             ;;
         *)
             echo "wrong args !"
@@ -682,6 +699,153 @@ function Delete_subscription_info() {
     clear
     [[ $LANGUAGE == 'zh' ]] && echo "删除成功" || echo "delete success"
     echo ""
+
+    if [[ $INTERACTIVE -eq 1 ]]; then
+        Interactive
+    fi
+}
+
+# =================================
+# == Rdm_passthrough_disk =====
+# =================================
+
+function Rdm_passthrough_disk() {
+
+    # CHECK BIOS
+    local kvm_intel=`lsmod | grep kvm_intel`
+    local kvm_amd=`lsmod | grep kvm_amd`
+    if [[ $kvm_intel == '' && $kvm_amd == '' ]];then
+        [[ $LANGUAGE == 'zh' ]] && echo "请在BIOS中开启AMD-V或VT-X" || echo "please enable AMD-V or VT-X in BIOS"
+        return
+    fi
+
+    local iommu_group=
+    if compgen -G "/sys/kernel/iommu_groups/*/devices/*" > /dev/null; then
+        echo ""
+    else
+        [[ $LANGUAGE == 'zh' ]] && echo "请在BIOS中开启AMD IOMMU或VT-D" || echo "please enable AMD's IOMMU or Intel's VT-D in BIOS"
+        return
+    fi
+
+    local vmid=''
+    local disk_serial=''
+    qm list
+
+    echo ""
+    
+    # set vmid
+    while true
+    do
+        [[ $LANGUAGE == 'zh' ]] && read -p "输入VMID: " vmid|| read -p "Enter VMID: " vmid
+        [[ `echo ${vmid} | sed -n '/^[0-9][0-9]*$/p'` ]] && break
+    done
+    
+    # check vmid
+    # ls /etc/pve/qemu-server | grep -q "${vmid}.conf"
+    vms=`ls /etc/pve/qemu-server | sed -n "/"${vmid}.conf"/p"`
+    if [[ ${vms} == '' ]]; then
+        [[ $LANGUAGE == 'zh' ]] && echo "vmid: ${vmid} 不存在 !" || echo "vmid: ${vmid} not exists !"
+        sleep 2
+        return
+    fi
+
+    echo ""
+
+    [[ $LANGUAGE == 'zh' ]] && echo "硬盘列表：" || echo "Disk List："
+
+
+    # set disk serial
+    local disk_list=()
+    disk_list[0]="ID:Device:Capacity:Modal:Serial"
+    local disk_ids=`ls -al /dev/disk/by-id | grep "^l" | sed -E 's/\s+/:/g' | cut -d ':' -f 10,12 | grep -vE "^dm|^lvm|^wwn|-part[0-9]+"`
+    local idx=1
+    # get disk for show seperated by : 
+    for item in ${disk_ids};do
+        disk=()
+        disk[0]=${idx}
+        disk[1]=`echo ${item} | sed 's|.*/||'`
+        disk[2]=`smartctl -a /dev/${disk[1]} | grep -iE 'Total NVM Capacity|User Capacity' | sed -E 's/.*\[(.*)\].*/\1/'`
+        disk[3]=`smartctl -a /dev/${disk[1]} | grep -iE 'Model Number|Device Model' | sed -E 's/^.*:\s*//'`
+        disk[4]=`echo ${item} | sed 's/:.*$//'`
+        disk_list[${idx}]=`echo "${disk[0]}:${disk[1]}:${disk[2]}:${disk[3]}:${disk[4]}" | sed -E 's/\s+/_/g'`
+        idx=$[idx+1]
+    done
+
+    # show disk list
+    for item in ${disk_list[@]};do
+        s=`echo ${item} | sed 's/:/\t/g'`
+        echo -e "${s}"
+    done
+
+    idx=''
+    while true
+    do
+        [[ $LANGUAGE == 'zh' ]] && read -p "请输入直通硬盘的ID: " idx || read -p "Enter Disk ID: " idx
+        [[ `echo ${idx} | sed -n '/^[0-9][0-9]*$/p'` ]] && [[ ${idx} -lt ${#disk_list[@]} && ${idx} -gt 0 ]] && break || echo "error index" 
+    done
+
+    disk_serial=`echo ${disk_list[${idx}]} | cut -d ':' -f 5`
+
+    echo ""
+
+    # set port type
+    local disk_type=2
+    local max_number=0
+    echo "passthrough type list:"
+    echo "[1] ide"
+    echo "[2] sata"
+    echo "[3] scsi"
+    echo "[4] virtio"
+    while true
+    do
+        [[ $LANGUAGE == 'zh' ]] && read -p "输入直通类型[默认 2]: " disk_type || read -p "Enter passthrough type[default 2]: " disk_type
+        [[ `echo ${disk_type} | sed -n '/^[0-9][0-9]*$/p'` ]] && [[ ${disk_type} -ge 1 && ${disk_type} -le 4 ]] && break || echo "bad arg !"
+    done
+    
+
+    case ${disk_type} in
+        1)
+            disk_type='ide'
+            max_number=3
+            ;;
+        2)
+            disk_type='sata'
+            max_number=5
+            ;;
+        3)
+            disk_type='scsi'
+            max_number=30
+            ;;
+        4)
+            disk_type='virtio'
+            max_number=15
+            ;;
+        *)
+            disk_type='sata'
+            max_number=5
+            ;;
+    esac
+
+    local disk_type_num=''
+    for ((i=0; i<=${max_number}; i++));do
+        # cat "/etc/pve/qemu-server/${vmid}.conf" | grep -qE "^${disk_type}${i}"
+        local r=`cat "/etc/pve/qemu-server/${vmid}.conf" | sed -n "/^${disk_type}${i}:/p"`
+        if [[ $r == '' ]]; then
+            disk_type_num="${disk_type}${i}"
+            break
+        fi
+    done
+
+    if [[ $disk_type_num == '' ]]; then
+        [[ $LANGUAGE == 'zh' ]] && echo "${disk_type} 端口已用尽" || echo "no more port for ${disk_type}"
+        sleep 1
+        return 
+    fi
+
+    echo "command: qm set ${vmid} --${disk_type_num} /dev/disk/by-id/${disk_serial}"
+    sleep 1
+    qm set ${vmid} --${disk_type_num} /dev/disk/by-id/${disk_serial}
+
 
     if [[ $INTERACTIVE -eq 1 ]]; then
         Interactive
