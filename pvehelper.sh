@@ -19,6 +19,7 @@ DELETE_TEMPEURE_SHOW=0
 ADD_SUBSCRIPTION_INFO=0
 DELETE_SUBSCRIPTION_INFO=0
 RDM_PASSTHROUGH_DISK=0
+PASSTHROUGH_NETWORK_PORT=0
 INTERACTIVE=0
 SHOW_HELP=0
 LANGUAGE=''
@@ -67,6 +68,10 @@ while [[ $# -ge 1 ]]; do
             ;;
         -rpd|--rdmpassthroughdisk)
             RDM_PASSTHROUGH_DISK=1
+            shift
+            ;;
+        --pn|--PASSTHROUGH_NETWORK_PORT)
+            PASSTHROUGH_NETWORK_PORT
             shift
             ;;
         -h|--help)
@@ -127,6 +132,11 @@ function Main() {
         Rdm_passthrough_disk
     fi
 
+    # PASSTHROUGH_NETWORK_PORT
+    if [[ $PASSTHROUGH_NETWORK_PORT -eq 1 ]]; then
+        Passthrough_network_port
+    fi
+
     # show help
     if [[ $SHOW_HELP -eq 1 ]]; then
         Show_help
@@ -182,6 +192,7 @@ function Interactive() {
         echo "[7] synchronize time"
         echo "[8] update RTL8125 driver"
         echo "[9] RDM passthrough disk"
+        echo "[10] Passthrough_network_port"
         read -p "select [default 1]" option
     elif [[ $LANGUAGE == "zh" ]]; then
         echo "选项:"
@@ -194,7 +205,8 @@ function Interactive() {
         echo "[7] 同步时间"
         echo "[8] 更新瑞昱R8125驱动"
         echo "[9] RDM直通硬盘"
-        read -p "请选择[默认 1]" option
+        echo "[10] 直通网口"
+        read -p "请选择[默认 1]:  " option
     fi
 
     [[ $option == "" ]] && option=1
@@ -235,6 +247,10 @@ function Interactive() {
         9)
             echo "rdm passthrough disk"
             Rdm_passthrough_disk
+            ;;
+        10)
+            echo "Passthrough network port"
+            Passthrough_network_port
             ;;
         *)
             echo "wrong args !"
@@ -705,18 +721,19 @@ function Delete_subscription_info() {
     fi
 }
 
+
 # =================================
 # == Rdm_passthrough_disk =====
 # =================================
 
-function Rdm_passthrough_disk() {
+function Add_grub_passthrough_args() {
 
     # CHECK BIOS
     local kvm_intel=`lsmod | grep kvm_intel`
     local kvm_amd=`lsmod | grep kvm_amd`
     if [[ $kvm_intel == '' && $kvm_amd == '' ]];then
         [[ $LANGUAGE == 'zh' ]] && echo "请在BIOS中开启AMD-V或VT-X" || echo "please enable AMD-V or VT-X in BIOS"
-        return
+        exit 1
     fi
 
     local iommu_group=
@@ -724,8 +741,75 @@ function Rdm_passthrough_disk() {
         echo ""
     else
         [[ $LANGUAGE == 'zh' ]] && echo "请在BIOS中开启AMD IOMMU或VT-D" || echo "please enable AMD's IOMMU or Intel's VT-D in BIOS"
-        return
+        exit 1
     fi
+
+    # check if iommu on
+    local c=`dmesg | grep -e DMAR -e IOMMU -e AMD-Vi | grep -i -e "Enabled IRQ remapping" -e "Directed I/O"`
+    local if_update_grub=0
+    local if_reboot=0
+    
+    if [[ ${c} == '' ]];then    
+        local d=`cat /proc/cpuinfo | grep -i "intel"`
+        echo "add IOMMU in grub.cfg"
+        [[ $d != '' ]] && sed -i 's|quiet|quiet intel_iommu=on video=efifb:off,vesafb:off pcie_acs_override=downstream|' /etc/default/grub
+        [[ $d == '' ]] && sed -i 's|quiet|quiet amd_iommu=on video=efifb:off,vesafb:off pcie_acs_override=downstream|' /etc/default/grub
+        if_reboot=1
+    fi 
+
+    # check /etc/modules
+    cp -af /etc/modules /etc/modules_bak
+    # sed -Ei 's/vfio|vfio_iommu_type1|vfio_pci|vfio_virqfd//g' /etc/modules
+    # sed -i '/^$/d' /etc/modules
+    if [[ `cat /etc/modules | grep '^vfio$'` ]];then
+        echo "vfio loaded" > /dev/null
+    else
+        echo "vfio" >> /etc/modules
+        modprobe vfio
+        if_update_grub=1
+    fi
+
+    if [[ `cat /etc/modules | grep '^vfio_iommu_type1$'` ]];then
+        echo "vfio_iommu_type1 loaded" > /dev/null
+    else
+        echo "vfio_iommu_type1" >> /etc/modules
+        modprobe vfio_iommu_type1
+        if_update_grub=1
+    fi
+   
+    if [[ `cat /etc/modules | grep '^vfio_pci$'` ]];then
+        echo "vfio_pci loaded" > /dev/null
+    else
+        echo "vfio_pci" >> /etc/modules
+        modprobe vfio_pci
+        if_update_grub=1
+    fi
+
+    if [[ `cat /etc/modules | grep '^vfio_virqfd$'` ]];then
+        echo "vfio_virqfd loaded" > /dev/null
+    else
+        echo "vfio_virqfd" >> /etc/modules
+        modprobe vfio_virqfd
+        if_update_grub=1
+    fi
+
+    if [[ ${if_update_grub} -eq 1 ]];then
+        echo "update grub"
+        update-grub
+        update-initramfs -u -k all
+    fi
+    
+    [[ ${if_reboot} -eq 1 ]] && reboot || echo "" 
+}
+
+
+# =================================
+# ===== Rdm_passthrough_disk ======
+# =================================
+
+function Rdm_passthrough_disk() {
+
+    Add_grub_passthrough_args
 
     local vmid=''
     local disk_serial=''
@@ -747,6 +831,11 @@ function Rdm_passthrough_disk() {
         [[ $LANGUAGE == 'zh' ]] && echo "vmid: ${vmid} 不存在 !" || echo "vmid: ${vmid} not exists !"
         sleep 2
         return
+    fi
+
+    if [[ `qm status ${vmid} | grep 'stop'` == '' ]]; then
+        [[ $LANGUAGE == 'zh' ]] && echo "请先关闭虚拟机 ${vmid}" || echo "please stop vm ${vmid}"
+        return 
     fi
 
     echo ""
@@ -785,6 +874,13 @@ function Rdm_passthrough_disk() {
     done
 
     disk_serial=`echo ${disk_list[${idx}]} | cut -d ':' -f 5`
+
+    local c=`cat "/etc/pve/qemu-server/${vmid}.conf" | sed -n "/${disk_serial}/p"`
+    if [[ $c != '' ]]; then
+        [[ $LANGUAGE == 'zh' ]] && echo "硬盘已经直通" || echo "disk is already passthrough"
+        sleep 1
+        return
+    fi
 
     echo ""
 
@@ -853,5 +949,84 @@ function Rdm_passthrough_disk() {
 }
 
 
+# =================================
+# == Passthrough_network_port =====
+# =================================
+
+function Passthrough_network_port() {
+
+    Add_grub_passthrough_args
+
+    echo ""
+    qm list
+    echo ""
+    
+    # set vmid
+    while true
+    do
+        [[ $LANGUAGE == 'zh' ]] && read -p "输入VMID: " vmid|| read -p "Enter VMID: " vmid
+        [[ `echo ${vmid} | sed -n '/^[0-9][0-9]*$/p'` ]] && break
+    done
+    
+    # check vmid
+    # ls /etc/pve/qemu-server | grep -q "${vmid}.conf"
+    vms=`ls /etc/pve/qemu-server | sed -n "/"${vmid}.conf"/p"`
+    if [[ ${vms} == '' ]]; then
+        [[ $LANGUAGE == 'zh' ]] && echo "vmid: ${vmid} 不存在 !" || echo "vmid: ${vmid} not exists !"
+        sleep 2
+        return
+    fi
+
+    if [[ `qm status ${vmid} | grep 'stop'` == '' ]]; then
+        [[ $LANGUAGE == 'zh' ]] && echo "请先关闭虚拟机 ${vmid}" || echo "please stop vm ${vmid}"
+        return 
+    fi
+
+    # set network port
+    local lspci_ethernet=`lspci | grep -i 'ethernet'`
+    local network_port_idx=''
+    # show network port
+    local lspci_ethernet_show=`echo "${lspci_ethernet}" | sed -E 's/( Ether)/\t\1/' | sed '=' | sed 'N; s/\n/\t/'`
+    echo ""
+    echo -e "ID\tPCIE_ID\tMODAL"
+    echo "${lspci_ethernet_show}"
+
+    while true
+    do
+        [[ $LANGUAGE == 'zh' ]] && read -p "直通的网口ID: " network_port_idx || read -p "Enter network port ID: " network_port_idx
+        [[ `echo ${network_port_idx} | sed -n '/^[0-9][0-9]*$/p'` ]] && break
+    done
+
+    local pci_id=`echo "${lspci_ethernet}" | head -n ${network_port_idx} | tail -n -1 | awk -F ' ' '{print $1}'`
+
+    if [[ `cat "/etc/pve/qemu-server/${vmid}.conf" | grep -i "${pci_id}"` != '' ]]; then
+        [[ $LANGUAGE == 'zh' ]] && echo "网口已直通" || echo "this port is already passthrough"
+        return
+    fi
+
+    # set hostpci num
+    local num=0
+    while true
+    do
+
+        local c=`cat "/etc/pve/qemu-server/${vmid}.conf" | grep -i "hostpci${num}"`
+        if [[ ${c} == '' ]];then
+            break
+        fi
+        num=$[num+1]
+        if [[ ${num} -ge 20 ]]; then
+            echo "too many net ports"
+            return
+        fi
+    done
+
+    echo "qm set ${vmid} -hostpci${num} ${pci_id}"
+
+    qm set ${vmid} -hostpci${num} ${pci_id}
+
+    if [[ $INTERACTIVE -eq 1 ]]; then
+        Interactive
+    fi
+}
 
 Main
