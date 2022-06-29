@@ -380,14 +380,14 @@ function Generate_tempture_info_Nodes() {
     sata=''
     nvme=''
     # cpu
-    o=${o}'$res->{cpu_temperatures} = '"\`sensors | grep -iE '(^pack|^core).*:' | sed 's/(.*)//g' | sed -E 's/ +/ /g' | sed 's/ *\\\\$/\",/g' | sed 's/^/\"/g' | sed 's/: */\":\"/' | sed '1 s/^/{/' | sed '\\\\$ s/,/}/' | sed 's/ /_/g'\`;\n"
+    o=${o}'$res->{cpu_temperatures} = '"\`sensors | grep -iE '(^pack|^core).*:' | sed 's/ *(.*)//g' | sed 's/: */\":\"/g' | sed -E 's/^/\"/g' | sed 's/\\\\$/\",/g' | sed '1 s/^/{/' | sed '\\\\$ s/,\\\\$/}/' | sed -E 's/ +/_/g'\`;\n"
 
     # hdd
     ls /dev/sd? >/dev/null 2>&1 && satas=`ls /dev/sd?` >/dev/null 2>&1 || satas=''
     for sata in $satas;
     do
         if [[ ${sata} != '' ]]; then
-            o=${o}"\$res->{"${sata##*/}_temperatures"} = ""\`smartctl -a ${sata} | grep -E 'Model|Capacity|Power_On_Hours|Temperature' | sed 's/(.*)//' | sed -E 's/^[ 0-9]+//' | sed 's/ \\\\$//' | sed -E 's/0x.* +//' | sed 's/ /_/g' | sed -E 's/:?__+/\":\"/' | sed 's/^/\"/' | sed 's/\\\\$/\",/' | sed '1 s/^/{/' | sed '\\\\$ s/,\\\\$/}/'\`;\n"
+            o=${o}"\$res->{${sata##*/}_temperatures} = ""\`smartctl -a ${sata} | grep -iE 'Device Model|User Capacity|Temperature_Celsius|Power_On_Hours' | sed 's/Device Model/Device_Model/' | sed 's/User Capacity/User_Capacity/'  | sed -E 's/^ *[0-9]+ +//g' | sed -E 's/( +[^ ]+){7}//' | sed -E 's/(: +)| +/\":\"/' | sed 's/^/\"/' | sed 's/\\\\$/\",/' | sed '1 s/^/{/' | sed '\\\\$ s/,\\\\$/}/'\`;\n"
         fi
     done
 
@@ -396,7 +396,7 @@ function Generate_tempture_info_Nodes() {
     for nvme in $nvmes;
     do
         if [[ ${nvme} != '' ]]; then
-            o=${o}"\$res->{"${nvme##*/}_temperatures"} = ""\`smartctl -a /dev/nvme0 | grep -E 'Model|Capacity|Temperature:|Percentage|Unit|Power On Hours' | sed 's/ /_/g' | sed 's/:_*/\":\"/g' | sed 's/^/\"/' | sed 's/\\\\$/\",/' | sed '1 s/^/{/' | sed '\\\\$ s/,\\\\$/}/'\`;\n;"
+            o=${o}"\$res->{${nvme##*/}_temperatures} = ""\`smartctl -a ${nvme} | grep -E 'Model Number|Total NVM Capacity|Temperature:|Power On Hours' | sed 's/: */\":\"/g' | sed -E 's/ +/_/g' | sed 's/^/\"/' | sed 's/\\\\$/\",/g' | sed '1 s/^/{/' | sed '\\\\$ s/,\\\\$/}/'\`;\n;"
         fi
     done
 
@@ -407,7 +407,7 @@ function Generate_tempture_info_Nodes() {
 function Generate_tempture_info_js() {
     local o=""
 
-    cpus=`sensors | grep -iE '(^pack|^core).*:' | sed 's/(.*)//g' | sed 's/:\s*/:/g' | sed 's/\s*$//g' | sed 's/ /_/g' | sed 's/:.*$//'`
+    cpus=`sensors | grep -iE '(^pack|^core).*:' | sed 's/:.*$//g' | sed -E 's/\s+/_/g'`
     o="${o}"`Generate_tempture_info_js_box "CPU Temperature" "fa fa-thermometer-half"`
     item_num=0
     for item in $cpus;
@@ -422,7 +422,7 @@ function Generate_tempture_info_js() {
     for sata in $satas;
     do
         sata_name=${sata##*/}
-        items=`smartctl -a ${sata} |grep -E 'Model|Capacity|Power_On_Hours|Temperature' | sed 's/(.*)//' | sed -E 's/0x.*\s+([0-9])/\1/' | sed -E 's/^[ 0-9]+//' | sed 's/ /_/' | sed 's/[:_]\s.*$//'`
+        items=`smartctl -a ${sata} | grep -iE 'Device Model|User Capacity|Temperature_Celsius|Power_On_Hours' | sed 's/Device Model/Device_Model/g' | sed 's/User Capacity/User_Capacity/g' | sed 's/Temperature_Celsius/Temperature_Celsius:/g' | sed 's/Power_On_Hours/Power_On_Hours:/g' | sed -E 's/^\s*[0-9]*\s+//g' | sed 's/:.*$//g' | sed 's/\s+/_/g'`
         o="${o}"`Generate_tempture_info_js_box "${sata_name} Info" "fa fa-hdd-o"`
         item_num=0
         for item in $items;
@@ -438,7 +438,7 @@ function Generate_tempture_info_js() {
     for nvme in $nvmes;
     do
         nvme_name=${nvme##*/}
-        items=`smartctl -a ${nvme} | grep -E 'Model|Capacity|Temperature:|Percentage|Unit|Power On Hours' | sed -E 's/\s+/_/g' | sed -E 's/:.*$//'`
+        items=`smartctl -a ${nvme} | grep -E 'Model Number|Total NVM Capacity|Temperature:|Power On Hours' | sed 's/:.*$//g' | sed -E 's/\s+/_/g'`
         o=${o}`Generate_tempture_info_js_box "${nvme_name} Info" "fa fa-microchip"`
         item_num=0
         for item in $items;
@@ -523,8 +523,8 @@ function Generate_tempture_info_js_box() {
 function Delete_tempture_show() {
 
     # recover
-    [[ -e /usr/share/pve-manager/js/pvemanagerlib.js_bak ]] && cp -f /usr/share/pve-manager/js/pvemanagerlib.js_bak /usr/share/pve-manager/js/pvemanagerlib.js
-    [[ -e /usr/share/perl5/PVE/API2/Nodes.pm_bak ]] && cp -f /usr/share/perl5/PVE/API2/Nodes.pm_bak /usr/share/perl5/PVE/API2/Nodes.pm
+    [[ -e /usr/share/pve-manager/js/pvemanagerlib.js_bak ]] && mv -f /usr/share/pve-manager/js/pvemanagerlib.js_bak /usr/share/pve-manager/js/pvemanagerlib.js
+    [[ -e /usr/share/perl5/PVE/API2/Nodes.pm_bak ]] && mv -f /usr/share/perl5/PVE/API2/Nodes.pm_bak /usr/share/perl5/PVE/API2/Nodes.pm
 
     systemctl restart pveproxy
 
@@ -538,17 +538,9 @@ function Delete_tempture_show() {
 # =================================
 
 function Update_r8125_driver() {
-    apt update -y
-    apt install -y dkms
-    apt install -y pve-headers-$(uname -r)
 
-    wget https://gitee.com/fibreyu/pve_realtek_r8125_dkms/attach_files/1094653/download/pve-realtek-r8125-dkms_9.009.01-1_amd64.deb -O /opt/driver.deb
-    dpkg -i /opt/driver.deb
+    wget https://gitee.com/fibreyu/pve_realtek_r8125_dkms/raw/main/auto_install.sh -O auto_install.sh && chmod +x auto_install.sh && bash auto_install.sh && rm -rf auto_install.sh
 
-    modprobe r8125
-    sed -i "s/r8125//g" /etc/modules
-    echo "r8125" >> /etc/modules
-    rm -rf /opt/driver.deb
 }
 
 
