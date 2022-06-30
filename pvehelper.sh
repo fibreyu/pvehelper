@@ -387,7 +387,7 @@ function Generate_tempture_info_Nodes() {
     for sata in $satas;
     do
         if [[ ${sata} != '' ]]; then
-            o=${o}"\$res->{${sata##*/}_temperatures} = ""\`smartctl -a ${sata} | grep -iE 'Device Model|User Capacity|Temperature_Celsius|Power_On_Hours' | sed 's/Device Model/Device_Model/' | sed 's/User Capacity/User_Capacity/'  | sed -E 's/^ *[0-9]+ +//g' | sed -E 's/( +[^ ]+){7}//' | sed -E 's/(: +)| +/\":\"/' | sed 's/^/\"/' | sed 's/\\\\$/\",/' | sed '1 s/^/{/' | sed '\\\\$ s/,\\\\$/}/'\`;\n"
+            o=${o}"\$res->{${sata##*/}_temperatures} = ""\`smartctl -a ${sata} | grep -iE 'Device Model|User Capacity|Temperature_Celsius|Power_On_Hours|Temperature_Internal' | sed 's/Device Model/Device_Model/' | sed 's/User Capacity/User_Capacity/'  | sed -E 's/^ *[0-9]+ +//g' | sed -E 's/( +[^ ]+){7}//' | sed -E 's/(: +)| +/\":\"/' | sed 's/^/\"/' | sed 's/\\\\$/\",/' | sed '1 s/^/{/' | sed '\\\\$ s/,\\\\$/}/'\`;\n"
         fi
     done
 
@@ -422,7 +422,7 @@ function Generate_tempture_info_js() {
     for sata in $satas;
     do
         sata_name=${sata##*/}
-        items=`smartctl -a ${sata} | grep -iE 'Device Model|User Capacity|Temperature_Celsius|Power_On_Hours' | sed 's/Device Model/Device_Model/g' | sed 's/User Capacity/User_Capacity/g' | sed 's/Temperature_Celsius/Temperature_Celsius:/g' | sed 's/Power_On_Hours/Power_On_Hours:/g' | sed -E 's/^\s*[0-9]*\s+//g' | sed 's/:.*$//g' | sed 's/\s+/_/g'`
+        items=`smartctl -a ${sata} | grep -iE 'Device Model|User Capacity|Temperature_Internal|Temperature_Celsius|Power_On_Hours' | sed 's/Device Model/Device_Model/g' | sed 's/User Capacity/User_Capacity/g' | sed 's/Temperature_Celsius/Temperature_Celsius:/g' | sed 's/Power_On_Hours/Power_On_Hours:/g' | sed 's/Temperature_Internal/Temperature_Internal:/g' | sed -E 's/^\s*[0-9]*\s+//g' | sed 's/:.*$//g' | sed 's/\s+/_/g'`
         o="${o}"`Generate_tempture_info_js_box "${sata_name} Info" "fa fa-hdd-o"`
         item_num=0
         for item in $items;
